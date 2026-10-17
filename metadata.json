@@ -1,0 +1,8 @@
+{
+  "name": "迷你口袋世界",
+  "description": "一款基于 Three.js 的治愈系微缩世界构建游戏；游戏核心是一个悬浮在玻璃球体内的多面体生态星球，玻璃球则置于胡桃木底座之上。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
