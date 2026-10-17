@@ -28,6 +28,7 @@ export class PocketWorldSoundscape {
   private isInitialized = false;
   private microEventTimer: number | null = null;
   private crackleTimer: number | null = null;
+  private crackleBuffer: AudioBuffer | null = null;
 
   private latestState: WorldState | null = null;
   private campfireCount = 2;
@@ -66,11 +67,18 @@ export class PocketWorldSoundscape {
    */
   public unlockOnInteraction() {
     if (!this.isEnabled) return;
-    this.ensureInitialized();
-    if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
+    if (this.isInitialized && this.ctx && this.ctx.state === 'running') {
+      return;
     }
-    this.applyLayerTargets();
+    try {
+      this.ensureInitialized();
+      if (this.ctx && this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      this.applyLayerTargets();
+    } catch {
+      // Ignore mobile WebView audio unlock restrictions
+    }
   }
 
   public updateWorldState(state: WorldState, campfires = 2) {
@@ -98,9 +106,18 @@ export class PocketWorldSoundscape {
     this.masterGain = master;
 
     // 1. Pink Noise Buffer (for Wind in Trees & Rain Patter)
-    const pinkBuffer = this.createPinkNoiseBuffer(ctx, 5.0);
+    const pinkBuffer = this.createPinkNoiseBuffer(ctx, 4.0);
     // 2. Brown Noise Buffer (for Ocean Waves & Campfire Warmth)
-    const brownBuffer = this.createBrownNoiseBuffer(ctx, 6.0);
+    const brownBuffer = this.createBrownNoiseBuffer(ctx, 4.5);
+    // 3. Reusable Campfire Crackle Buffer (avoids per-crackle heap allocation)
+    const crackleLen = Math.ceil(ctx.sampleRate * 0.032);
+    const crackleBuf = ctx.createBuffer(1, crackleLen, ctx.sampleRate);
+    const crackleData = crackleBuf.getChannelData(0);
+    for (let i = 0; i < crackleLen; i++) {
+      crackleData[i] =
+        (Math.random() * 2 - 1) * Math.exp(-i / (crackleLen * 0.32));
+    }
+    this.crackleBuffer = crackleBuf;
 
     // --- Layer A: Forest Breeze & Windmills (Pink Noise + Slow LFO Bandpass) ---
     const windSource = ctx.createBufferSource();
@@ -300,38 +317,31 @@ export class PocketWorldSoundscape {
   }
 
   private triggerCampfireCrackle() {
-    if (!this.ctx || !this.masterGain) return;
-    const now = this.ctx.currentTime;
+    if (!this.ctx || !this.masterGain || !this.crackleBuffer) return;
+    try {
+      const now = this.ctx.currentTime;
+      const dur = 0.018 + Math.random() * 0.014;
 
-    // Short filtered noise burst for a realistic wood ember snap
-    const dur = 0.018 + Math.random() * 0.022;
-    const buf = this.ctx.createBuffer(
-      1,
-      Math.ceil(this.ctx.sampleRate * dur),
-      this.ctx.sampleRate,
-    );
-    const data = buf.getChannelData(0);
-    for (let i = 0; i < data.length; i++) {
-      data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (data.length * 0.35));
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.crackleBuffer;
+
+      const filter = this.ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 1600 + Math.random() * 1800;
+      filter.Q.value = 3.2;
+
+      const gain = this.ctx.createGain();
+      const intensity = Math.min(0.12, 0.025 * Math.sqrt(this.campfireCount));
+      gain.gain.setValueAtTime(intensity, now);
+      gain.gain.exponentialRampToValueAtTime(0.0005, now + dur);
+
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.masterGain);
+      src.start(now);
+    } catch {
+      // ignore audio node errors
     }
-
-    const src = this.ctx.createBufferSource();
-    src.buffer = buf;
-
-    const filter = this.ctx.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.value = 1600 + Math.random() * 1800;
-    filter.Q.value = 3.2;
-
-    const gain = this.ctx.createGain();
-    const intensity = Math.min(0.12, 0.025 * Math.sqrt(this.campfireCount));
-    gain.gain.setValueAtTime(intensity, now);
-    gain.gain.exponentialRampToValueAtTime(0.0005, now + dur);
-
-    src.connect(filter);
-    filter.connect(gain);
-    gain.connect(this.masterGain);
-    src.start(now);
   }
 
   private triggerAmbientMicroEvent() {

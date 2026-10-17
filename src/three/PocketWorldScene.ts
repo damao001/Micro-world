@@ -204,17 +204,25 @@ export class PocketWorldController {
   private initScene() {
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
+    const isMobile =
+      window.matchMedia('(max-width: 768px), (pointer: coarse)').matches ||
+      /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
 
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !isMobile || window.devicePixelRatio <= 1.5,
       powerPreference: 'high-performance',
     });
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(
+      Math.min(window.devicePixelRatio, isMobile ? 1.35 : 2),
+    );
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = isMobile
+      ? THREE.PCFShadowMap
+      : THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
+    this.renderer.domElement.style.touchAction = 'none';
     while (this.container.firstChild) {
       this.container.removeChild(this.container.firstChild);
     }
@@ -244,7 +252,8 @@ export class PocketWorldController {
     this.roomWindowLight = new THREE.DirectionalLight('#ffdfb8', 1.35);
     this.roomWindowLight.position.set(-4.8, 4.6, 3.8);
     this.roomWindowLight.castShadow = true;
-    this.roomWindowLight.shadow.mapSize.set(2048, 2048);
+    const roomShadowRes = isMobile ? 1024 : 2048;
+    this.roomWindowLight.shadow.mapSize.set(roomShadowRes, roomShadowRes);
     this.roomWindowLight.shadow.camera.near = 1.0;
     this.roomWindowLight.shadow.camera.far = 15.0;
     const d = 3.2;
@@ -357,7 +366,11 @@ export class PocketWorldController {
     // Little sun directional light casting moving shadows across the planet
     this.sunLight = new THREE.DirectionalLight('#fff0c2', 1.9);
     this.sunLight.castShadow = true;
-    this.sunLight.shadow.mapSize.set(1024, 1024);
+    const isMobileSun =
+      window.matchMedia('(max-width: 768px), (pointer: coarse)').matches ||
+      /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+    const sunShadowRes = isMobileSun ? 512 : 1024;
+    this.sunLight.shadow.mapSize.set(sunShadowRes, sunShadowRes);
     this.sunLight.shadow.camera.near = 0.2;
     this.sunLight.shadow.camera.far = 3.5;
     const sd = 1.05;
@@ -847,6 +860,9 @@ export class PocketWorldController {
     segB: THREE.Vector3;
     railAxis: THREE.Vector3;
   } {
+    if (fenceObj.cachedFenceSeg) {
+      return fenceObj.cachedFenceSeg;
+    }
     const surface = this.terrain.getSurfacePointAndNormal(fenceObj.dir);
     const alignQuat = new THREE.Quaternion().setFromUnitVectors(
       UP_VEC,
@@ -869,7 +885,9 @@ export class PocketWorldController {
       .clone()
       .addScaledVector(railAxis, halfSpan)
       .normalize();
-    return { segA, segB, railAxis };
+    const res = { segA, segB, railAxis };
+    fenceObj.cachedFenceSeg = res;
+    return res;
   }
 
   private closestPointOnSphereSegment(
@@ -877,18 +895,34 @@ export class PocketWorldController {
     segA: THREE.Vector3,
     segB: THREE.Vector3,
   ): THREE.Vector3 {
-    const ab = segB.clone().sub(segA);
-    const lenSq = ab.lengthSq();
+    const abx = segB.x - segA.x;
+    const aby = segB.y - segA.y;
+    const abz = segB.z - segA.z;
+    const lenSq = abx * abx + aby * aby + abz * abz;
     if (lenSq < 1e-8) return segA.clone();
-    const ap = pt.clone().sub(segA);
-    const t = THREE.MathUtils.clamp(ap.dot(ab) / lenSq, 0, 1);
-    return segA.clone().addScaledVector(ab, t).normalize();
+    const apx = pt.x - segA.x;
+    const apy = pt.y - segA.y;
+    const apz = pt.z - segA.z;
+    const t = THREE.MathUtils.clamp(
+      (apx * abx + apy * aby + apz * abz) / lenSq,
+      0,
+      1,
+    );
+    return new THREE.Vector3(
+      segA.x + abx * t,
+      segA.y + aby * t,
+      segA.z + abz * t,
+    ).normalize();
   }
 
   private getRainbowFootDirs(
     dir: THREE.Vector3,
     yaw: number,
+    rainbowObj?: PlacedObjectEntity,
   ): [THREE.Vector3, THREE.Vector3] {
+    if (rainbowObj?.cachedRainbowFeet) {
+      return rainbowObj.cachedRainbowFeet;
+    }
     const surface = this.terrain.getSurfacePointAndNormal(dir);
     const alignQuat = new THREE.Quaternion().setFromUnitVectors(
       UP_VEC,
@@ -899,7 +933,11 @@ export class PocketWorldController {
     const xAxis = new THREE.Vector3(1, 0, 0).applyQuaternion(fullQuat);
     const footA = surface.point.clone().addScaledVector(xAxis, -0.058).normalize();
     const footB = surface.point.clone().addScaledVector(xAxis, 0.058).normalize();
-    return [footA, footB];
+    const pair: [THREE.Vector3, THREE.Vector3] = [footA, footB];
+    if (rainbowObj) {
+      rainbowObj.cachedRainbowFeet = pair;
+    }
+    return pair;
   }
 
   private findCollisionFreeRainbowYaw(dir: THREE.Vector3): number {
@@ -966,7 +1004,7 @@ export class PocketWorldController {
         continue;
       }
       if (obj.type === 'rainbow') {
-        const [footA, footB] = this.getRainbowFootDirs(obj.dir, obj.yaw);
+        const [footA, footB] = this.getRainbowFootDirs(obj.dir, obj.yaw, obj);
         if (
           dir.distanceTo(footA) < 0.026 + extraMargin ||
           dir.distanceTo(footB) < 0.026 + extraMargin
@@ -1640,6 +1678,8 @@ export class PocketWorldController {
 
   private realignAllObjectsToTerrain() {
     for (const obj of this.placedObjects) {
+      obj.cachedFenceSeg = undefined;
+      obj.cachedRainbowFeet = undefined;
       const stickToSea = obj.type === 'dock' || obj.type === 'bridge';
       const useRadialUp = stickToSea || obj.type === 'lighthouse';
       this.orientObjectOnSurface(obj.mesh, obj.dir, obj.yaw, 0, stickToSea, useRadialUp);
@@ -2681,32 +2721,47 @@ export class PocketWorldController {
       ),
     );
 
-    this.onStateChange((prev) => {
-      const next: WorldState = {
-        ...prev,
-        planetName: this.planetName,
-        activeTool: this.activeTool,
-        activeView: this.activeView,
-        timeMode: this.timeMode,
-        timeOfDay: this.timeOfDay,
-        population: villagers,
-        happiness,
-        dayCount: this.dayCount,
-        objectCounts: {
-          houses,
-          trees,
-          windmills,
-          lighthouses,
-          villagers,
-          sheep,
-          clouds,
-          flowers,
-          boats,
-        },
-      };
-      soundscape.updateWorldState(next, campfires);
-      return next;
-    });
+    const objectCounts = {
+      houses,
+      trees,
+      windmills,
+      lighthouses,
+      villagers,
+      sheep,
+      clouds,
+      flowers,
+      boats,
+    };
+
+    const snapshotState: WorldState = {
+      planetName: this.planetName,
+      activeTool: this.activeTool,
+      activeView: this.activeView,
+      timeMode: this.timeMode,
+      timeOfDay: this.timeOfDay,
+      population: villagers,
+      happiness,
+      dayCount: this.dayCount,
+      tourActive: this.tourActive,
+      tourElapsed: this.tourElapsed,
+      tourPhase: '',
+      objectCounts,
+    };
+
+    soundscape.updateWorldState(snapshotState, campfires);
+
+    this.onStateChange((prev) => ({
+      ...prev,
+      planetName: this.planetName,
+      activeTool: this.activeTool,
+      activeView: this.activeView,
+      timeMode: this.timeMode,
+      timeOfDay: this.timeOfDay,
+      population: villagers,
+      happiness,
+      dayCount: this.dayCount,
+      objectCounts,
+    }));
 
     if (saveToLocal && !this.tourActive) {
       this.saveToLocalStorage();
@@ -2801,7 +2856,13 @@ export class PocketWorldController {
     };
   }
 
-  public saveToLocalStorage(): boolean {
+  private saveDebounceTimer: number | null = null;
+
+  public flushSaveToLocalStorage(): boolean {
+    if (this.saveDebounceTimer !== null) {
+      window.clearTimeout(this.saveDebounceTimer);
+      this.saveDebounceTimer = null;
+    }
     if (this.tourActive) return false;
     try {
       const snapshot = this.exportWorldSnapshot();
@@ -2813,6 +2874,18 @@ export class PocketWorldController {
     } catch {
       return false;
     }
+  }
+
+  public saveToLocalStorage(): boolean {
+    if (this.tourActive) return false;
+    if (this.saveDebounceTimer !== null) {
+      window.clearTimeout(this.saveDebounceTimer);
+    }
+    this.saveDebounceTimer = window.setTimeout(() => {
+      this.saveDebounceTimer = null;
+      this.flushSaveToLocalStorage();
+    }, 280);
+    return true;
   }
 
   public importWorldSnapshot(
@@ -2975,6 +3048,10 @@ export class PocketWorldController {
   }
 
   public resetToDefaultWorld() {
+    if (this.saveDebounceTimer !== null) {
+      window.clearTimeout(this.saveDebounceTimer);
+      this.saveDebounceTimer = null;
+    }
     try {
       localStorage.removeItem(PocketWorldController.STORAGE_KEY);
     } catch {
@@ -3003,15 +3080,19 @@ export class PocketWorldController {
     const dom = this.renderer.domElement;
     const raycaster = new THREE.Raycaster();
     const pointerNDC = new THREE.Vector2();
+    const activePointers = new Map<number, { x: number; y: number }>();
+    let lastPinchDist: number | null = null;
+    let wasMultiTouch = false;
+    let lastHoverRaycastMs = 0;
 
-    const updateNDC = (e: PointerEvent) => {
+    const updateNDC = (clientX: number, clientY: number) => {
       const rect = dom.getBoundingClientRect();
-      pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      pointerNDC.x = ((clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1;
+      pointerNDC.y = -((clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1;
     };
 
-    const getTerrainHit = (e: PointerEvent) => {
-      updateNDC(e);
+    const getTerrainHitAt = (clientX: number, clientY: number) => {
+      updateNDC(clientX, clientY);
       raycaster.setFromCamera(pointerNDC, this.camera);
       const hits = raycaster.intersectObjects(
         [this.terrain.terrainMesh, this.terrain.waterMesh],
@@ -3026,34 +3107,79 @@ export class PocketWorldController {
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (e.button !== 0 && e.button !== 2) return;
+      if (e.pointerType === 'mouse' && e.button !== 0 && e.button !== 2) return;
       if (this.tourActive) return;
-      this.isPointerDown = true;
-      this.isDraggingSpin = false;
-      this.pointerDownPos.set(e.clientX, e.clientY);
-      this.lastPointerPos.set(e.clientX, e.clientY);
+
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (activePointers.size === 1) {
+        this.isPointerDown = true;
+        this.isDraggingSpin = false;
+        wasMultiTouch = false;
+        lastPinchDist = null;
+        this.pointerDownPos.set(e.clientX, e.clientY);
+        this.lastPointerPos.set(e.clientX, e.clientY);
+      } else if (activePointers.size >= 2) {
+        // Multi-touch pinch-to-zoom gesture on mobile
+        wasMultiTouch = true;
+        this.isDraggingSpin = true;
+        this.cursorRing.visible = false;
+        this.angularVelocity.set(0, 0);
+        const pts = Array.from(activePointers.values());
+        lastPinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+      }
     };
 
     const onPointerMove = (e: PointerEvent) => {
       if (this.tourActive) {
         return;
       }
-      const hitDir = getTerrainHit(e);
-      if (hitDir && !this.isDraggingSpin) {
-        this.cursorRing.visible = true;
-        const surf = this.terrain.getSurfacePointAndNormal(hitDir);
-        this.orientObjectOnSurface(
-          this.cursorRing,
-          hitDir,
-          0,
-          0.004,
-          surf.isWater,
-        );
-      } else {
-        this.cursorRing.visible = false;
+
+      if (activePointers.has(e.pointerId)) {
+        activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       }
 
-      if (!this.isPointerDown) return;
+      // Handle 2-finger pinch-to-zoom on mobile
+      if (activePointers.size >= 2) {
+        const pts = Array.from(activePointers.values());
+        const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        if (lastPinchDist !== null && lastPinchDist > 8) {
+          const delta = lastPinchDist - dist;
+          if (Math.abs(delta) > 0.5) {
+            this.zoomBy(delta * 0.012);
+          }
+        }
+        lastPinchDist = dist;
+        return;
+      }
+
+      // Desktop mouse hover ring: throttled to ~30fps and skipped on touch/drag
+      if (
+        e.pointerType === 'mouse' &&
+        !this.isDraggingSpin &&
+        !this.isPointerDown
+      ) {
+        const now = performance.now();
+        if (now - lastHoverRaycastMs >= 32) {
+          lastHoverRaycastMs = now;
+          const hitDir = getTerrainHitAt(e.clientX, e.clientY);
+          if (hitDir) {
+            this.cursorRing.visible = true;
+            const surf = this.terrain.getSurfacePointAndNormal(hitDir);
+            this.orientObjectOnSurface(
+              this.cursorRing,
+              hitDir,
+              0,
+              0.004,
+              surf.isWater,
+            );
+          } else {
+            this.cursorRing.visible = false;
+          }
+        }
+      }
+
+      if (!this.isPointerDown || wasMultiTouch) return;
 
       const dx = e.clientX - this.lastPointerPos.x;
       const dy = e.clientY - this.lastPointerPos.y;
@@ -3062,7 +3188,7 @@ export class PocketWorldController {
         e.clientY - this.pointerDownPos.y,
       );
 
-      if (totalDist > 5) {
+      if (totalDist > 6) {
         this.isDraggingSpin = true;
         this.cursorRing.visible = false;
       }
@@ -3077,17 +3203,38 @@ export class PocketWorldController {
       this.lastPointerPos.set(e.clientX, e.clientY);
     };
 
-    const onPointerUp = (e: PointerEvent) => {
+    const onPointerUpOrCancel = (e: PointerEvent) => {
+      activePointers.delete(e.pointerId);
+
+      if (activePointers.size < 2) {
+        lastPinchDist = null;
+      }
+
+      if (activePointers.size > 0) {
+        // One finger still down after multi-touch; update anchor so it doesn't jump
+        const remaining = activePointers.values().next().value;
+        if (remaining) {
+          this.lastPointerPos.set(remaining.x, remaining.y);
+        }
+        return;
+      }
+
       if (!this.isPointerDown) return;
       this.isPointerDown = false;
 
-      if (!this.isDraggingSpin && e.button === 0) {
-        const hitDir = getTerrainHit(e);
+      if (
+        e.type === 'pointerup' &&
+        !this.isDraggingSpin &&
+        !wasMultiTouch &&
+        (e.pointerType !== 'mouse' || e.button === 0)
+      ) {
+        const hitDir = getTerrainHitAt(e.clientX, e.clientY);
         if (hitDir) {
           this.handleSurfaceAction(hitDir);
         }
       }
       this.isDraggingSpin = false;
+      wasMultiTouch = false;
     };
 
     const onWheel = (e: WheelEvent) => {
@@ -3112,7 +3259,7 @@ export class PocketWorldController {
       if (!this.container) return;
       const w = this.container.clientWidth || window.innerWidth;
       const h = this.container.clientHeight || window.innerHeight;
-      this.camera.aspect = w / h;
+      this.camera.aspect = w / Math.max(1, h);
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h);
     };
@@ -3128,22 +3275,35 @@ export class PocketWorldController {
       }
     };
 
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        this.flushSaveToLocalStorage();
+      } else {
+        this.clock.getDelta(); // Reset clock delta after background tab pause
+      }
+    };
+
     dom.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('pointerup', onPointerUpOrCancel);
+    window.addEventListener('pointercancel', onPointerUpOrCancel);
     dom.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('resize', onResize);
     window.addEventListener('keydown', onKeyDown);
+    document.addEventListener('visibilitychange', onVisibilityChange);
 
     // Save cleanup reference
     (this as unknown as { _cleanup: () => void })._cleanup = () => {
+      this.flushSaveToLocalStorage();
       resizeObserver.disconnect();
       dom.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointerup', onPointerUpOrCancel);
+      window.removeEventListener('pointercancel', onPointerUpOrCancel);
       dom.removeEventListener('wheel', onWheel);
       window.removeEventListener('resize', onResize);
       window.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }
 
@@ -3502,7 +3662,7 @@ export class PocketWorldController {
         }
 
         if (obj.type === 'rainbow') {
-          const [footA, footB] = this.getRainbowFootDirs(obj.dir, obj.yaw);
+          const [footA, footB] = this.getRainbowFootDirs(obj.dir, obj.yaw, obj);
           for (const footDir of [footA, footB]) {
             const dFoot = v.dir.distanceTo(footDir);
             const minClear = 0.026 + villagerRadius;
@@ -4075,7 +4235,7 @@ export class PocketWorldController {
         }
 
         if (obj.type === 'rainbow') {
-          const [footA, footB] = this.getRainbowFootDirs(obj.dir, obj.yaw);
+          const [footA, footB] = this.getRainbowFootDirs(obj.dir, obj.yaw, obj);
           for (const footDir of [footA, footB]) {
             const minFootDist = 0.028 + villagerRadius;
             const dFoot = v.dir.distanceTo(footDir);
@@ -4224,7 +4384,7 @@ export class PocketWorldController {
         }
 
         if (obj.type === 'rainbow') {
-          const [footA, footB] = this.getRainbowFootDirs(obj.dir, obj.yaw);
+          const [footA, footB] = this.getRainbowFootDirs(obj.dir, obj.yaw, obj);
           for (const footDir of [footA, footB]) {
             const minFootDist = 0.028 + sheepRadius;
             const dFoot = s.dir.distanceTo(footDir);

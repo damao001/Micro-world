@@ -422,17 +422,13 @@ export function createRoomEnvironment(
   const orbGroup = new THREE.Group();
 
   // Inner glass wall (BackSide) for physical depth cue
-  const innerGlassGeo = new THREE.SphereGeometry(1.46, 64, 64);
-  const innerGlassMat = new THREE.MeshPhysicalMaterial({
+  const innerGlassGeo = new THREE.SphereGeometry(1.46, 40, 32);
+  const innerGlassMat = new THREE.MeshBasicMaterial({
     color: new THREE.Color('#dcfaee'),
     transparent: true,
-    opacity: 0.06,
-    roughness: 0.08,
-    metalness: 0.0,
+    opacity: 0.055,
     side: THREE.BackSide,
     depthWrite: false,
-    envMap,
-    envMapIntensity: 0.4,
   });
   const innerGlassMesh = new THREE.Mesh(innerGlassGeo, innerGlassMat);
   innerGlassMesh.renderOrder = 10;
@@ -440,7 +436,7 @@ export function createRoomEnvironment(
 
   // Outer custom shader shell: visible glass thickness band, faint green edges,
   // and curved 4-pane evening window reflection on the upper-left curve
-  const outerGlassGeo = new THREE.SphereGeometry(1.5, 96, 96);
+  const outerGlassGeo = new THREE.SphereGeometry(1.5, 48, 36);
   const orbGlassMaterial = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,

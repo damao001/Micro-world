@@ -244,7 +244,15 @@ export default function App() {
     }, 3500);
   };
 
+  const lastWakeTimeRef = useRef<number>(0);
+
   const wakeUpUI = (alsoShowToolHint = false) => {
+    const now = performance.now();
+    // Avoid resetting timers 60 times/sec during continuous touch/scroll gestures
+    if (!alsoShowToolHint && uiVisible && now - lastWakeTimeRef.current < 400) {
+      return;
+    }
+    lastWakeTimeRef.current = now;
     soundscape.unlockOnInteraction();
     setUiVisible(true);
     if (uiTimerRef.current !== null) {
@@ -727,8 +735,7 @@ export default function App() {
   return (
     <div
       onPointerDown={() => wakeUpUI(true)}
-      onTouchStart={() => wakeUpUI(true)}
-      className="relative flex w-screen h-screen overflow-hidden select-none bg-[#221d2b]"
+      className="relative flex w-screen h-dvh overflow-hidden select-none bg-[#221d2b]"
     >
       {/* 全屏 3D Three.js 生态球视口 */}
       <div className="relative flex-1 min-w-0 h-full">

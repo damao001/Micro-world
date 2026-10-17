@@ -353,6 +353,40 @@ export function createPlanetTerrain(): PlanetTerrainHandles {
   const colDeepSea = new THREE.Color('#126c87');
   const wColor = new THREE.Color();
 
+  // Pre-build 8x8x8 3D spatial lookup buckets (with 3x3x3 neighbor expansion baked in)
+  // so getSurfacePointAndNormal checks ~25 facets instead of all facets.
+  const GRID_RES = 8;
+  const toGridCoord = (v: number) =>
+    Math.min(GRID_RES - 1, Math.max(0, Math.floor((v + 1.0) * 0.5 * GRID_RES)));
+  const toBucketIndex = (gx: number, gy: number, gz: number) =>
+    (gx << 6) | (gy << 3) | gz;
+
+  const facetBuckets: FacetInfo[][] = Array.from(
+    { length: GRID_RES * GRID_RES * GRID_RES },
+    () => [],
+  );
+  for (let f = 0; f < facets.length; f++) {
+    const facet = facets[f];
+    const cx = toGridCoord(facet.centerDir.x);
+    const cy = toGridCoord(facet.centerDir.y);
+    const cz = toGridCoord(facet.centerDir.z);
+    for (let dx = -1; dx <= 1; dx++) {
+      const gx = cx + dx;
+      if (gx < 0 || gx >= GRID_RES) continue;
+      for (let dy = -1; dy <= 1; dy++) {
+        const gy = cy + dy;
+        if (gy < 0 || gy >= GRID_RES) continue;
+        for (let dz = -1; dz <= 1; dz++) {
+          const gz = cz + dz;
+          if (gz < 0 || gz >= GRID_RES) continue;
+          facetBuckets[toBucketIndex(gx, gy, gz)].push(facet);
+        }
+      }
+    }
+  }
+
+  let wetWaterIndices: number[] = [];
+
   const updateWaterColors = () => {
     for (let f = 0; f < facets.length; f++) {
       const facet = facets[f];
@@ -376,19 +410,32 @@ export function createPlanetTerrain(): PlanetTerrainHandles {
       waterColorAttr.setXYZ(i + 2, wColor.r, wColor.g, wColor.b);
     }
     waterColorAttr.needsUpdate = true;
+
+    // Rebuild active wet water vertex indices & park dry vertices beneath terrain once
+    wetWaterIndices = [];
+    for (let i = 0; i < waterCount; i++) {
+      const d = waterDirs[i];
+      const terrainRadius = uniqueVertices[attrToUnique[i]].radius;
+      const depth = seaLevel - terrainRadius;
+      if (depth <= 0.001) {
+        const dryR = Math.min(seaLevel - 0.004, terrainRadius - 0.004);
+        waterPos.setXYZ(i, d.x * dryR, d.y * dryR, d.z * dryR);
+      } else {
+        wetWaterIndices.push(i);
+      }
+    }
+    waterPos.needsUpdate = true;
   };
 
   updateWaterColors();
 
-  const waterMaterial = new THREE.MeshPhysicalMaterial({
+  const waterMaterial = new THREE.MeshStandardMaterial({
     vertexColors: true,
     flatShading: true,
     transparent: true,
     opacity: 0.86,
-    roughness: 0.18,
-    metalness: 0.05,
-    clearcoat: 0.6,
-    clearcoatRoughness: 0.2,
+    roughness: 0.16,
+    metalness: 0.08,
   });
 
   const waterMesh = new THREE.Mesh(waterGeo, waterMaterial);
@@ -397,14 +444,22 @@ export function createPlanetTerrain(): PlanetTerrainHandles {
 
   const getSurfacePointAndNormal = (dir: THREE.Vector3) => {
     const normDir = dir.clone().normalize();
-    let bestDot = -2;
-    let bestFacet = facets[0];
+    const bIdx = toBucketIndex(
+      toGridCoord(normDir.x),
+      toGridCoord(normDir.y),
+      toGridCoord(normDir.z),
+    );
+    const bucket = facetBuckets[bIdx];
+    const searchPool = bucket && bucket.length > 0 ? bucket : facets;
 
-    for (let f = 0; f < facets.length; f++) {
-      const dot = normDir.dot(facets[f].centerDir);
+    let bestDot = -2;
+    let bestFacet = searchPool[0];
+
+    for (let f = 0; f < searchPool.length; f++) {
+      const dot = normDir.dot(searchPool[f].centerDir);
       if (dot > bestDot) {
         bestDot = dot;
-        bestFacet = facets[f];
+        bestFacet = searchPool[f];
       }
     }
 
@@ -511,6 +566,9 @@ export function createPlanetTerrain(): PlanetTerrainHandles {
   };
 
   let moistureDirty = false;
+  let colorUpdateAccum = 0;
+  let waterFrameSkip = 0;
+
   const applyRainAtDirection = (dir: THREE.Vector3, dt: number) => {
     const normDir = dir.clone().normalize();
     for (let f = 0; f < facets.length; f++) {
@@ -541,15 +599,14 @@ export function createPlanetTerrain(): PlanetTerrainHandles {
   };
 
   const update = (elapsedTime: number, dt: number, _nightFactor: number) => {
-    for (let i = 0; i < waterCount; i++) {
-      const d = waterDirs[i];
-      const terrainRadius = uniqueVertices[attrToUnique[i]].radius;
-      const depth = seaLevel - terrainRadius;
-
-      if (depth <= 0.001) {
-        const dryR = Math.min(seaLevel - 0.004, terrainRadius - 0.004);
-        waterPos.setXYZ(i, d.x * dryR, d.y * dryR, d.z * dryR);
-      } else {
+    // Update only wet water vertices every 2nd frame to cut mobile CPU/GPU buffer upload cost
+    waterFrameSkip = (waterFrameSkip + 1) & 1;
+    if (waterFrameSkip === 0 && wetWaterIndices.length > 0) {
+      for (let k = 0; k < wetWaterIndices.length; k++) {
+        const i = wetWaterIndices[k];
+        const d = waterDirs[i];
+        const terrainRadius = uniqueVertices[attrToUnique[i]].radius;
+        const depth = seaLevel - terrainRadius;
         const phase = waterPhases[i];
         const shoreMask = THREE.MathUtils.clamp(depth / 0.014, 0.0, 1.0);
         const wave =
@@ -559,8 +616,8 @@ export function createPlanetTerrain(): PlanetTerrainHandles {
         const r = seaLevel + wave;
         waterPos.setXYZ(i, d.x * r, d.y * r, d.z * r);
       }
+      waterPos.needsUpdate = true;
     }
-    waterPos.needsUpdate = true;
 
     let anyWetOrSnow = false;
     for (let f = 0; f < facets.length; f++) {
@@ -574,8 +631,12 @@ export function createPlanetTerrain(): PlanetTerrainHandles {
       }
     }
     if (anyWetOrSnow || moistureDirty) {
-      updateTerrainColorsOnly();
-      moistureDirty = false;
+      colorUpdateAccum += dt;
+      if (colorUpdateAccum >= 0.09) {
+        updateTerrainColorsOnly();
+        colorUpdateAccum = 0;
+        moistureDirty = false;
+      }
     }
   };
 

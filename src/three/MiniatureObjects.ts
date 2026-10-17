@@ -42,6 +42,12 @@ export interface PlacedObjectEntity {
   watchtowerFlag?: THREE.Mesh;
   butterflySwarm?: THREE.Group;
   removable: boolean;
+  cachedFenceSeg?: {
+    segA: THREE.Vector3;
+    segB: THREE.Vector3;
+    railAxis: THREE.Vector3;
+  };
+  cachedRainbowFeet?: [THREE.Vector3, THREE.Vector3];
 }
 
 export interface VillagerEntity {
@@ -1082,9 +1088,23 @@ export function createStripedLighthouseMesh(): {
   beamPivot.add(createBeamCone(1));
   beamPivot.add(createBeamCone(-1));
 
+  // Warm lantern glow halo (avoids costly per-object PointLight shader recompiles on mobile)
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: '#ffcf6e',
+    transparent: true,
+    opacity: 0.0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const lanternHalo = new THREE.Mesh(
+    new THREE.SphereGeometry(0.036, 10, 10),
+    haloMat,
+  );
+  beamPivot.add(lanternHalo);
+  coneMats.push(haloMat);
+
   const pointLight = new THREE.PointLight('#ffcf6e', 0, 0.55, 1.5);
   pointLight.position.y = 0.01;
-  beamPivot.add(pointLight);
 
   group.add(beamPivot);
 
@@ -2691,9 +2711,23 @@ export function createCampfireMesh(): {
   );
   group.add(embers);
 
+  // Warm campfire ground & air glow halo (avoids per-object PointLight shader overhead on mobile)
+  const fireGlowHalo = new THREE.Mesh(
+    new THREE.SphereGeometry(0.034, 10, 8),
+    new THREE.MeshBasicMaterial({
+      color: '#ff8833',
+      transparent: true,
+      opacity: 0.28,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    }),
+  );
+  fireGlowHalo.scale.set(1.3, 0.65, 1.3);
+  fireGlowHalo.position.y = 0.012;
+  flameGroup.add(fireGlowHalo);
+
   const light = new THREE.PointLight('#ff8833', 0.65, 0.36, 1.6);
   light.position.y = 0.024;
-  group.add(light);
 
   return { group, flameGroup, embers, light };
 }
